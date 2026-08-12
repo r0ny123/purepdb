@@ -13,11 +13,19 @@ import pytest
 from purepdb import PDB, c13
 from purepdb.names import StringTable, parse_named_stream_map
 from tests._synth import (
-    build_msf, dbi_stream, file_checksums, gproc32, line_entries, module_info,
-    module_sym_stream, names_stream, pdb_info_stream,
-    publics_hash_stream, section_header, subsection,
+    build_msf,
+    dbi_stream,
+    file_checksums,
+    gproc32,
+    line_entries,
+    module_info,
+    module_sym_stream,
+    names_stream,
+    pdb_info_stream,
+    publics_hash_stream,
+    section_header,
+    subsection,
 )
-
 
 # --- named stream map -------------------------------------------------------
 
@@ -76,7 +84,7 @@ def test_a_length_past_the_end_stops_the_walk():
 
 def test_the_ignore_bit_is_masked_off():
     data = subsection(c13.DEBUG_S_LINES | c13.DEBUG_S_IGNORE, b"\x00" * 4)
-    assert list(c13.iter_subsections(data))[0].kind == c13.DEBUG_S_LINES
+    assert next(iter(c13.iter_subsections(data))).kind == c13.DEBUG_S_LINES
 
 
 def test_file_checksum_entries_are_keyed_by_their_own_offset():
