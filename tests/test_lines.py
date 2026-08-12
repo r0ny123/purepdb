@@ -83,9 +83,30 @@ def test_a_length_past_the_end_stops_the_walk():
     assert len(list(c13.iter_subsections(data))) == 1
 
 
-def test_the_ignore_bit_is_masked_off():
-    data = subsection(c13.DEBUG_S_LINES | c13.DEBUG_S_IGNORE, b"\x00" * 4)
-    assert next(iter(c13.iter_subsections(data))).kind == c13.DEBUG_S_LINES
+def test_a_subsection_marked_ignore_is_stepped_over():
+    """`cvinfo.h`: "if this bit is set in a subsection type then ignore the
+    subsection contents". Masking it off instead would turn a deliberately
+    excluded DEBUG_S_LINES block into a live one."""
+    ignored = subsection(c13.DEBUG_S_LINES | c13.DEBUG_S_IGNORE, b"\x00" * 4)
+    live = subsection(c13.DEBUG_S_FILECHECKSUMS, b"\x01" * 4)
+
+    assert list(c13.iter_subsections(ignored)) == []
+    # ...and the walk still advances over it to reach what follows.
+    assert [s.kind for s in c13.iter_subsections(ignored + live)] == [
+        c13.DEBUG_S_FILECHECKSUMS
+    ]
+
+
+def test_lines_from_an_ignored_subsection_are_not_reported():
+    raw_names, offsets = names_stream(["", "main.c"])
+    checksums, entry_offsets = file_checksums([(offsets["main.c"], b"")])
+    region = (subsection(c13.DEBUG_S_FILECHECKSUMS, checksums)
+              + subsection(c13.DEBUG_S_LINES | c13.DEBUG_S_IGNORE,
+                           line_entries(segment=1, base_offset=0x10,
+                                        file_entry=entry_offsets[0],
+                                        entries=[(0, 7, True)])))
+    pdb = _pdb(c13_region=region, raw_names=raw_names)
+    assert list(pdb.lines()) == []
 
 
 def test_file_checksum_entries_are_keyed_by_their_own_offset():

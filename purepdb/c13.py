@@ -79,14 +79,22 @@ class LineEntry:
 
 
 def iter_subsections(data: bytes):
-    """Yield each C13 subsection. Stops at the first header that does not fit."""
+    """Yield each C13 subsection. Stops at the first header that does not fit.
+
+    A subsection whose kind carries `DEBUG_S_IGNORE` is stepped over rather
+    than yielded: `cvinfo.h` defines the bit as "if this bit is set in a
+    subsection type then ignore the subsection contents". Masking it off
+    instead would turn a deliberately excluded `DEBUG_S_LINES` block into a
+    live one and report line data the producer marked as not to be used.
+    """
     pos = 0
     while pos + 8 <= len(data):
         kind, length = struct.unpack_from("<II", data, pos)
         pos += 8
         if length > len(data) - pos:
             return
-        yield Subsection(kind=kind & ~DEBUG_S_IGNORE, payload=data[pos : pos + length])
+        if not kind & DEBUG_S_IGNORE:
+            yield Subsection(kind=kind, payload=data[pos : pos + length])
         pos += length
         pos += -pos % 4
 

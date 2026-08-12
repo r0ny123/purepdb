@@ -335,3 +335,14 @@ def test_a_pdb_without_inlining_reports_none(rel):
     assert pdb.inline_sites() == []
     assert pdb.diagnose().inline_sites == 0
     assert pdb.id_table() is not None, "the id stream is there, just unreferenced"
+
+
+def test_an_opcode_outside_the_defined_range_ends_the_walk():
+    """Operand widths are what split the stream into instructions, so an
+    unknown opcode makes everything after it unreadable. Consuming one operand
+    and carrying on resynchronises on whatever follows and invents ranges:
+    `0e 63 04 03` used to come back as [(0, 3)]."""
+    assert _ranges(bytes([0x0E, 0x63, 0x04, 0x03])) == []
+
+    # What comes before an unknown opcode is still real and is kept.
+    assert _ranges(bytes([0x0B, 0x04, 0x04, 0x03, 0x0E, 0x63, 0x04, 0x03])) == [(4, 3)]

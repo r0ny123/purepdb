@@ -349,6 +349,13 @@ def parse_inline_site(payload: bytes) -> InlineSite:
             opcode = _uncompress(r)
             if opcode is None or opcode == BA_OP_INVALID:
                 break
+            if opcode > BA_OP_CHANGE_COLUMN_END:
+                # An opcode outside the defined range has unknown operand
+                # widths, so the bytes after it cannot be split into
+                # instructions at all. Reading one operand and carrying on
+                # would resynchronise on whatever happened to follow and
+                # fabricate ranges from it.
+                break
             first = _uncompress(r)
             if first is None:
                 break
