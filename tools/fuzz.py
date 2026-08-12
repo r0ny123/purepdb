@@ -26,6 +26,7 @@ import argparse
 import random
 import signal
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -138,6 +139,8 @@ def main() -> int:
                     help="stop after this many distinct defects")
     ap.add_argument("--max-seed-bytes", type=int, default=1 << 20,
                     help="skip seed fixtures larger than this (default 1 MiB)")
+    ap.add_argument("--max-seconds", type=float, default=0.0,
+                    help="stop once this much wall clock has gone (0: no limit)")
     args = ap.parse_args()
 
     rng = random.Random(args.seed)
@@ -149,8 +152,19 @@ def main() -> int:
     if hasattr(signal, "SIGALRM"):
         signal.signal(signal.SIGALRM, _alarm)
 
+    # A budget in seconds rather than in inputs, because the cost of an input
+    # is set by the corpus: the same iteration count is a minute with the small
+    # fixtures and hours with the 3 MB ones. Stopping early loses coverage but
+    # not reproducibility -- generation is sequential from the seed, so
+    # iteration i is the same input whether or not the run reached it.
+    deadline = time.monotonic() + args.max_seconds if args.max_seconds > 0 else None
+
     failures: dict[str, tuple[int, bytes]] = {}
+    ran = 0
     for i in range(args.iterations):
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        ran = i + 1
         name = list(GENERATORS)[i % len(GENERATORS)]
         data = GENERATORS[name](rng, seeds)
         if hasattr(signal, "SIGALRM"):
@@ -174,7 +188,8 @@ def main() -> int:
                 signal.alarm(0)
 
     if not failures:
-        print(f"ok: {args.iterations} inputs, seed {args.seed}, "
+        short = f" of {args.iterations} (out of time)" if ran < args.iterations else ""
+        print(f"ok: {ran} inputs{short}, seed {args.seed}, "
               f"no exception escaped {'/'.join(e.__name__ for e in ALLOWED)}")
         return 0
 
