@@ -51,6 +51,7 @@ dev = [
     "hatchling",  # so `make package` can use --no-isolation
     "pytest>=7",
     "ruff>=0.14",
+    "ty>=0.0.1a1",
     "twine",
 ]
 
@@ -96,3 +97,9 @@ select = [
 "purepdb/__init__.py" = ["F401"]
 # The harness deliberately catches everything and pokes at private internals.
 "tools/fuzz.py" = ["E402"]
+
+[tool.ty.rules]
+# The package is checked strictly. Nothing is relaxed here yet -- this table
+# exists so that any future exemption has to be written down with a reason
+# rather than added as a bare command-line flag in CI.
+

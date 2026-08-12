@@ -19,6 +19,7 @@ concurrency:
 
 jobs:
   lint:
+    name: lint and type check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -27,12 +28,20 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      # Pinned exactly: a linter that changes under you turns an unrelated pull
-      # request red. Bumping it is a deliberate commit, and dependabot opens it.
-      - name: Install ruff
-        run: pip install ruff==0.16.2
+      # The type checker resolves imports against a real environment, so the
+      # project and its dev group have to be installed -- checking the tests
+      # means resolving pytest. The tool versions are then pinned exactly over
+      # the top: one that changes under you turns an unrelated pull request red,
+      # and bumping it should be a deliberate commit that dependabot opens.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install --group dev -e .
+          pip install ruff==0.16.2 ty==0.0.70
       - name: Lint
         run: ruff check --output-format github .
+      - name: Type check
+        run: ty check --output-format github .
 
   test:
     runs-on: ${{ matrix.os }}
