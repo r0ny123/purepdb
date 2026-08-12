@@ -83,7 +83,16 @@ def main(argv: list[str]) -> int:
         print(f"modules            : {d.modules} ({d.modules_with_symbols} with symbols)")
         print(f"proc records       : {d.proc_records}")
         print(f"public records     : {d.public_records}")
+        print(f"inline sites       : {d.inline_sites}")
         print(f"section headers    : {'yes' if d.has_section_headers else 'NO'}")
+        print(f"truncated streams  : {d.truncated_streams}")
+        print(f"malformed records  : {d.malformed_records}")
+        if d.derived_sections:
+            print(f"derived segments   : {d.derived_sections} (from the DBI Section Map)")
+        if d.omap_entries or d.has_original_sections:
+            print(f"omap entries       : {d.omap_entries} "
+                  f"(rvas translated to the post-link layout)")
+        print(f"section contribs   : {d.section_contributions}")
         print("module record kinds:")
         from . import codeview
         for kind, count in sorted(d.module_kinds.items(), key=lambda kv: -kv[1]):

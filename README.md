@@ -14,7 +14,7 @@ documentation. See [NOTICE](NOTICE) for provenance and prior art.
 uv pip install -e '.[dev]'     # dev extra is just pytest
 ```
 
-Runtime dependencies: none. Python 3.9+.
+Runtime dependencies: none. Python 3.11+.
 
 ## Usage
 
@@ -25,16 +25,31 @@ pdb = PDB.open("app.pdb")
 
 for fn in pdb.functions():
     print(hex(fn.rva or 0), fn.name)
-    # fn.segment, fn.offset, fn.code_size, fn.source, fn.aliases
+    # fn.segment, fn.offset, fn.code_size, fn.source, fn.aliases, fn.module
 ```
+
+`module` is the linker input the address came from — an `.obj` path, a library
+member, or `Import:foo.dll` for an import thunk — taken from DBI's Section
+Contribution table. It is what separates library code from application code
+without guessing from the name: 3453 of sqlite3 x86's 3620 functions come from
+`sqlite3.lo`, the rest from the CRT and from import thunks.
 
 `rva` is **image-relative**. Add the PE image base yourself if you need virtual
 addresses.
 
+`source` is `"proc"`, `"public"` or `"thunk"`, naming the record the entry came
+from. Incremental-link trampolines are *not* in this list — they carry no name,
+so `pdb.trampolines()` reports them separately, as a code range plus the address
+it jumps to.
+
 `aliases` holds the other names at the same entry point. Linkers fold identical
 bodies (`/OPT:ICF`, and rust-lld by default), so one address legitimately
 carries several correct names; `fn.names` gives all of them with `fn.name`
-first. On sqlite3 x86 that is 357 of 3620 functions, worst case 3 names.
+first. On sqlite3 x86 that is 438 of 3620 functions, worst case 4 names.
+
+`pdb.lines()` yields `(rva, file, line)` for every source line the PDB records —
+70157 of them in sqlite3 x86, across 133 files. It is a generator; the file
+names come from the `/names` stream, which `pdb.named_streams()` locates.
 
 CLI:
 
@@ -84,16 +99,44 @@ the function flag. The extra ones are real code — every one resolves inside
 `public_symbols()` is unfiltered either way, so `is_function` still means exactly
 what the record says.
 
+## Inlined functions
+
+An inlined body has no entry point, so it has no procedure record and no public
+— `functions()` cannot see it by construction. `pdb.inline_sites()` reports them
+separately, each with its name, the code ranges it occupies inside its caller,
+and which function that is:
+
+```python
+for site in pdb.inline_sites():
+    print(hex(site.rva or 0), site.name, "inlined into", site.parent)
+```
+
+On the Rust fixture that is 3797 sites against 248 procedure records — fifteen
+inlined bodies for every function with an entry point, and the largest naming
+gap the parser had.
+
 ## Scope
 
 **Supported:** MSF 7.00 container; PDB info stream; DBI stream (module list,
-publics/symbol-record streams, optional debug header); CodeView `S_PUB32`,
-`S_GPROC32`/`S_LPROC32` (and `_ID` variants), `S_GDATA32`/`S_LDATA32`;
-section-header table for `segment:offset -> RVA`.
+section contributions, publics/symbol-record streams, optional debug header);
+CodeView `S_PUB32`, `S_GPROC32`/`S_LPROC32` (and `_ID` variants),
+`S_GDATA32`/`S_LDATA32`, `S_PROCREF`/`S_LPROCREF`, `S_CONSTANT`, `S_UDT`,
+`S_THUNK32`, `S_TRAMPOLINE`, `S_INLINESITE` with its binary annotations;
+section-header table for `segment:offset -> RVA`, with DBI's Section Map as the
+fallback when that table is absent; OMAP address translation for images whose
+code was moved after linking; the named stream map, the `/names` string table
+and the C13 `DEBUG_S_LINES` / `DEBUG_S_FILECHECKSUMS` subsections for `rva ->
+file:line`; the IPI id records that name an inlinee.
 
-**Not supported:** TPI/IPI type decoding, line/source tables, demangling (names
-come back raw), PDBs whose section info comes only from the DBI Section Map.
-`/DEBUG:FASTLINK` PDBs yield publics only, and say so.
+**Not supported:** TPI type decoding, column info, demangling (names come back
+raw). The IPI stream is read only for the names inlined bodies refer to by id;
+no type is decoded. `/DEBUG:FASTLINK` PDBs yield publics only, and say so.
+
+Where the section-header stream is missing, addresses are rebuilt from the
+Section Map, which records segment sizes but no addresses. `diagnose()` says
+when that happened, because the result is a reconstruction — taking the stream
+away from each fixture leaves every function at the address it had before, but
+it assumes the default `0x1000` section alignment.
 
 ## Tests
 
@@ -101,13 +144,25 @@ come back raw), PDBs whose section info comes only from the DBI Section Map.
 .venv/bin/python -m pytest -q
 ```
 
+```bash
+make lint    # ruff
+make fuzz    # malformed input must not escape as an exception
+```
+
 Two layers. Synthetic tests build MSF/PDB byte streams with a builder
 independent of the reader, so they exercise a real serialise→parse round trip.
-Golden tests run against real `link.exe` and `rust-lld` output in `tests/data/`
-and cross-check against the companion PE image — section table, and the address
-of every exported function after following its `jmp` thunk. The PE reader in
-`tests/_pe.py` is stdlib-only and never consults the PDB, so agreement is
-evidence rather than a shared assumption.
+Golden tests run against real `link.exe` and `rust-lld` output in `tests/data/`,
+32- and 64-bit, and cross-check against the companion PE image — section table,
+and the address of every exported function after following its `jmp` thunk. The
+PE reader in `tests/_pe.py` is stdlib-only and never consults the PDB, so
+agreement is evidence rather than a shared assumption.
+
+A third layer runs outside pytest. `tools/fuzz.py` drives every public entry
+point over random, structurally-corrupted and bit-flipped input, and fails if
+anything other than `PdbError` escapes -- the contract a caller writes
+`except PdbError` against. GitHub Actions runs a short pass on every change
+and a longer one nightly with a rotating seed; a failing input is saved and
+uploaded as an artefact so it can be replayed.
 
 `tests/data/` is in the repository but excluded from the sdist and wheel, so
 installing purepdb does not pull down 12 MB of binaries. Those tests skip when

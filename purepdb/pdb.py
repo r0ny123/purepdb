@@ -16,22 +16,32 @@ Both are resolved to image RVAs via the section-header table when available.
 
 from __future__ import annotations
 
+import bisect
 import struct
 from dataclasses import dataclass, field
 
-from . import codeview
-from .dbi import DbiStream
+from . import c13, codeview
+from .dbi import ContributionMap, DbiStream, ModuleInfo, SectionContribution
 from .gsi import PublicsStream
+from .ipi import IdTable
 from .msf import MsfFile
-from .sections import SectionTable
+from .names import StringTable, parse_named_stream_map
+from .omap import OmapTable
+from .sections import SectionTable, sections_from_map
 
 # Fixed stream indices in every PDB.
 STREAM_PDB_INFO = 1
 STREAM_TPI = 2
 STREAM_DBI = 3
+STREAM_IPI = 4
 
-# CodeView signature that prefixes each module symbol substream.
+# CodeView signature that prefixes each module symbol substream, and its size.
 CV_SIGNATURE_C13 = 4
+CV_SIGNATURE_SIZE = 4
+
+# Sentinel for "this stream has not been looked for yet", so that a PDB without
+# one is not searched again on every call.
+_UNREAD = object()
 
 
 @dataclass
@@ -41,7 +51,12 @@ class Function:
     offset: int
     rva: int | None
     code_size: int | None
-    source: str  # "proc" or "public"
+    source: str  # "proc", "public" or "thunk"
+    module: str | None = None
+    """The linker input this address came from, per the Section Contribution
+    substream: an `.obj` path, a library member, or `Import:foo.dll` for an
+    import thunk. None when the PDB has no usable contribution table, or when
+    the address falls in a gap between contributions."""
     aliases: list[str] = field(default_factory=list)
     """Other names sharing this entry point, in discovery order.
 
@@ -53,7 +68,51 @@ class Function:
     @property
     def names(self) -> list[str]:
         """Every name at this entry point, `name` first."""
-        return [self.name] + self.aliases
+        return [self.name, *self.aliases]
+
+
+@dataclass
+class Line:
+    """One source line and the address it starts at."""
+
+    rva: int | None
+    segment: int
+    offset: int
+    file: str
+    line: int
+    module: str
+
+    @property
+    def is_source(self) -> bool:
+        """False for the two line numbers that are markers, not lines.
+
+        `0xFEEFEE` means the compiler generated this code with no source behind
+        it, `0xF00F00` that a debugger should not step into it."""
+        return self.line not in c13.LINE_MARKERS
+
+
+@dataclass
+class InlineFunction:
+    """A function the compiler pasted into another one instead of calling.
+
+    It has no entry point of its own, so it is not a `Function` and does not
+    appear in `functions()`. What it has is a name and the code it occupies
+    inside its caller, which can be several disjoint ranges.
+    """
+
+    name: str
+    inlinee: int  # item id in the IPI stream, resolved into `name`
+    segment: int
+    offset: int   # start of the first range
+    rva: int | None
+    ranges: list[tuple[int, int]]  # (offset, length) within the segment
+    parent: str          # the procedure this body was inlined into
+    parent_offset: int   # that procedure's entry point, which names repeat
+    parent_code_size: int
+
+    @property
+    def code_size(self) -> int:
+        return sum(length for _offset, length in self.ranges)
 
 
 @dataclass
@@ -81,6 +140,32 @@ class Diagnostics:
     public_records: int
     has_section_headers: bool
     module_kinds: dict[int, int]  # record kind -> count, module streams only
+    malformed_records: int = 0
+    """Records whose payload is shorter than the kind they claim to be. They
+    are skipped; the symbols they would have carried are lost."""
+    truncations: list[tuple[str, codeview.Truncation]] = field(default_factory=list)
+    """Record streams that stopped short, as (stream description, where).
+
+    Symbols past the bad record are simply absent, so an unreported truncation
+    is a short listing with no explanation -- the one thing `diagnose()` exists
+    to prevent."""
+    derived_sections: int = 0
+    """Segments rebuilt from DBI's Section Map because the section-header
+    stream was absent. Non-zero means every rva is a reconstruction."""
+    omap_entries: int = 0
+    """Size of the original-to-final address map, 0 when the image is not
+    BBT-processed. Non-zero means every RVA reported went through it."""
+    has_original_sections: bool = False
+    section_contributions: int = 0
+    """Entries in the Section Contribution substream. Zero means `Function.module`
+    is None throughout -- the substream is absent, or a version we do not read."""
+
+    @property
+    def truncated_streams(self) -> int:
+        return len(self.truncations)
+    inline_sites: int = 0
+    """Inlined bodies found in the module streams. They have no entry point and
+    so never reach `functions()`; `inline_sites()` is where they live."""
 
     @property
     def managed_proc_records(self) -> int:
@@ -95,11 +180,21 @@ class Diagnostics:
         from . import codeview
 
         out = []
-        if not self.has_section_headers:
-            out.append(
-                "no section-header stream (Optional Debug Header slot 5): "
-                "segment:offset cannot be resolved, every rva is None"
-            )
+        if not self.has_section_headers and not self.has_original_sections:
+            if self.derived_sections:
+                out.append(
+                    f"no section-header stream (Optional Debug Header slot 5): "
+                    f"addresses come from {self.derived_sections} segments "
+                    f"rebuilt from DBI's Section Map, which records segment "
+                    f"sizes but no addresses. Every rva is a reconstruction "
+                    f"assuming the default 0x1000 section alignment"
+                )
+            else:
+                out.append(
+                    "no section-header stream (Optional Debug Header slot 5) "
+                    "and no usable Section Map: segment:offset cannot be "
+                    "resolved, every rva is None"
+                )
         if self.proc_records == 0 and self.modules_with_symbols:
             if self.managed_proc_records:
                 out.append(
@@ -124,7 +219,47 @@ class Diagnostics:
                 "no public records in the symbol-record stream; thunks and "
                 "folded entries will be missing"
             )
+        if self.malformed_records:
+            out.append(
+                f"{self.malformed_records} record(s) are shorter than the kind "
+                f"they claim to be and were skipped; the symbols they carried "
+                f"are missing"
+            )
+        if self.truncations:
+            where, first = self.truncations[0]
+            out.append(
+                f"{self.truncated_streams} record stream(s) stopped early; "
+                f"every symbol after that point is missing. First: {where} at "
+                f"byte {first.offset:#x} ({first.reason})"
+            )
+        if self.omap_entries and not self.has_original_sections:
+            out.append(
+                "an original-to-final address map is present (Optional Debug "
+                "Header slot 4) but the original section table in slot 10 is "
+                "not, so there is no pre-optimisation address space to "
+                "translate out of; addresses are reported as the section "
+                "headers give them and the map is not applied"
+            )
+        if self.has_original_sections and not self.omap_entries:
+            out.append(
+                "this image was processed after linking (Optional Debug Header "
+                "slot 10 carries its original section table) but the "
+                "original-to-final address map in slot 4 is missing: every rva "
+                "is in the pre-optimisation address space and does not match "
+                "the shipped image"
+            )
         return out
+
+
+def _table_or_none(data: bytes) -> SectionTable | None:
+    """A parsed section table, or None when it describes no sections.
+
+    A stream can be present and empty, which parses into a table that is
+    perfectly valid and resolves nothing. Treating that as absent is what
+    lets the Section Map fallback run and keeps `diagnose()` honest.
+    """
+    table = SectionTable.parse(data)
+    return table if table.sections else None
 
 
 class PDB:
@@ -132,14 +267,22 @@ class PDB:
         self.msf = msf
         self.dbi = DbiStream.parse(msf.read_stream(STREAM_DBI))
         self._sections: SectionTable | None = None
+        self._derived_sections: SectionTable | None = None
+        self._original_sections: SectionTable | None = None
+        self._omap: OmapTable | None = None
+        self._contributions = ContributionMap(self.dbi.section_contributions)
+        self._stream_cache_index: int | None = None
+        self._stream_cache: bytes = b""
+        self._string_table = _UNREAD
+        self._id_table = _UNREAD
         self._load_sections()
 
     @classmethod
-    def open(cls, path: str) -> "PDB":
+    def open(cls, path: str) -> PDB:
         return cls(MsfFile.open(path))
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> "PDB":
+    def from_bytes(cls, data: bytes) -> PDB:
         return cls(MsfFile(data))
 
     # -- metadata -----------------------------------------------------------
@@ -155,22 +298,103 @@ class PDB:
     def _load_sections(self) -> None:
         idx = self.dbi.section_header_stream
         if self.msf.is_valid_stream(idx):
-            self._sections = SectionTable.parse(self.msf.read_stream(idx))
+            self._sections = _table_or_none(self.msf.read_stream(idx))
+        if self._sections is None and self.dbi.section_map:
+            derived = sections_from_map(self.dbi.section_map)
+            if derived:
+                self._derived_sections = SectionTable(derived)
+
+        idx = self.dbi.original_section_header_stream
+        if self.msf.is_valid_stream(idx):
+            self._original_sections = _table_or_none(self.msf.read_stream(idx))
+
+        idx = self.dbi.omap_from_src_stream
+        if self.msf.is_valid_stream(idx):
+            self._omap = OmapTable.parse(self.msf.read_stream(idx))
 
     @property
     def sections(self) -> list:
         """The image's section table, or an empty list if the PDB omits it.
 
         Read from the section-header stream named by Optional Debug Header slot
-        5. Without it there is no way to turn segment:offset into an RVA, so
-        `Function.rva` is None throughout.
+        5, and reported only when that stream is present -- these are the
+        image's own headers, names and all. When it is absent, addresses still
+        resolve through `derived_sections`.
         """
         return self._sections.sections if self._sections else []
 
-    def _rva(self, segment: int, offset: int) -> int | None:
-        if self._sections is None:
+    @property
+    def derived_sections(self) -> list:
+        """A section table rebuilt from DBI's Section Map, or an empty list.
+
+        Populated only when the section-header stream is missing, which is the
+        one case where it is needed. The Section Map records no addresses, so
+        these are reconstructed; see `sections_from_map` for what that assumes.
+        """
+        return self._derived_sections.sections if self._derived_sections else []
+
+    @property
+    def original_sections(self) -> list:
+        """The pre-BBT section table (Optional Debug Header slot 10), if any.
+
+        Present only on images whose code was moved after linking. Symbol
+        `segment:offset` pairs are expressed against *this* table, not against
+        `sections`, which describes the shipped layout.
+        """
+        return self._original_sections.sections if self._original_sections else []
+
+    @property
+    def omap(self) -> OmapTable | None:
+        """The original-to-final address map, when the image was BBT-processed."""
+        return self._omap
+
+    @property
+    def _symbol_sections(self) -> SectionTable | None:
+        """The section table symbol addresses are expressed against.
+
+        The pre-BBT table when the image was reordered after linking, then the
+        image's own headers, then the one rebuilt from the Section Map.
+        """
+        return (self._original_sections or self._sections
+                or self._derived_sections)
+
+    def to_rva(self, segment: int, offset: int) -> int | None:
+        """Resolve a symbol's 1-based `segment` and `offset` to an image RVA.
+
+        None when the PDB carries no section table, or when the segment names
+        no section -- which happens for real symbols; see `SectionTable.to_rva`.
+        """
+        table = self._symbol_sections
+        if table is None:
             return None
-        return self._sections.to_rva(segment, offset)
+        rva = table.to_rva(segment, offset)
+        # Two ways the map must not be applied. An empty one maps nothing, so
+        # testing falsiness rather than None keeps it from nulling every rva.
+        # And it translates out of the *pre-BBT* address space, so an address
+        # resolved against any other table is already final -- running it
+        # through the map would move it somewhere no symbol lives.
+        if rva is None or not self._omap:
+            return rva
+        if table is not self._original_sections:
+            return rva
+        return self._omap.lookup(rva)
+
+    # Retained because this was the internal spelling before `to_rva` was made
+    # public, and both are called from across the package.
+    _rva = to_rva
+
+    # -- section contributions ----------------------------------------------
+
+    def section_contributions(self) -> list[SectionContribution]:
+        """Every linker input's claim on a range of the image, address-ordered."""
+        return self._contributions.contributions
+
+    def module_of(self, segment: int, offset: int) -> ModuleInfo | None:
+        """The linker input that contributed `segment:offset`, if it is known."""
+        contrib = self._contributions.find(segment, offset)
+        if contrib is None or contrib.module_index >= len(self.dbi.modules):
+            return None
+        return self.dbi.modules[contrib.module_index]
 
     # -- symbols ------------------------------------------------------------
 
@@ -226,11 +450,170 @@ class PDB:
             return raw[4:end]
         return raw[:end]
 
+    def module_c13_bytes(self, mod) -> bytes:
+        """The C13 line-info region of one module's stream.
+
+        It follows the symbols and the (obsolete, always empty here) C11
+        region, bounded by the three sizes in the module's DBI record.
+        """
+        if not mod.has_lines or not self.msf.is_valid_stream(mod.sym_stream):
+            return b""
+        raw = self.msf.read_stream(mod.sym_stream)
+        start = mod.sym_byte_size + mod.c11_byte_size
+        return raw[start : start + mod.c13_byte_size]
+
     def module_procs(self) -> list[codeview.ProcSymbol]:
         procs: list[codeview.ProcSymbol] = []
         for mod in self.dbi.modules:
             procs.extend(codeview.extract_procs(self.module_symbol_bytes(mod)))
         return procs
+
+    def proc_refs(self) -> list[codeview.ProcRef]:
+        """Every procedure, indexed by the globals, from a single stream.
+
+        `module_procs()` finds the same set by walking every module stream;
+        this reads one. The two agree exactly on all three fixtures, which is
+        what makes it useful as a cross-check -- and as the only listing left
+        when a module stream is unreadable.
+
+        A ProcRef carries no address of its own, only the offset of the proc
+        record inside its module's stream. `resolve_proc_ref()` follows it.
+        """
+        idx = self.dbi.symrecord_stream_index
+        if not self.msf.is_valid_stream(idx):
+            return []
+        return codeview.extract_proc_refs(self.msf.read_stream(idx))
+
+    def _cached_stream(self, index: int) -> bytes:
+        """The last stream read, remembered.
+
+        Proc refs arrive grouped by module -- 3539 of them span 29 runs on
+        sqlite3 x86 -- so holding one stream turns a read per ref into a read
+        per module, and bounds the memory at a single stream.
+        """
+        if self._stream_cache_index != index:
+            self._stream_cache = self.msf.read_stream(index)
+            self._stream_cache_index = index
+        return self._stream_cache
+
+    def resolve_proc_ref(self, ref: codeview.ProcRef) -> codeview.ProcSymbol | None:
+        """Read the proc record a ProcRef points at, or None if it does not.
+
+        The offset is into the module stream as stored, signature included, so
+        it is used against the raw stream rather than the symbol region.
+        """
+        if not 0 <= ref.module_index < len(self.dbi.modules):
+            return None
+        mod = self.dbi.modules[ref.module_index]
+        if not self.msf.is_valid_stream(mod.sym_stream):
+            return None
+        raw = self._cached_stream(mod.sym_stream)
+        if ref.sym_offset + 4 > len(raw):
+            return None
+        rec_len, kind = struct.unpack_from("<HH", raw, ref.sym_offset)
+        end = ref.sym_offset + 2 + rec_len
+        if rec_len < 2 or kind not in codeview.PROC_KINDS or end > len(raw):
+            return None
+        try:
+            return codeview.parse_proc(kind, raw[ref.sym_offset + 4 : end])
+        except EOFError:
+            # RecordLen is the record's own claim; a short one is damage, not
+            # a proc we can read.
+            return None
+
+    def thunks(self) -> list[codeview.ThunkSymbol]:
+        """Named jump stubs (S_THUNK32) across all module streams.
+
+        These are code with a name, so `functions()` includes them. On x86 the
+        name is the undecorated one -- `RoInitialize` where the public at the
+        same address is `_RoInitialize@4` -- so they add names even where they
+        add no addresses.
+        """
+        out: list[codeview.ThunkSymbol] = []
+        for mod in self.dbi.modules:
+            out.extend(codeview.extract_thunks(self.module_symbol_bytes(mod)))
+        return out
+
+    def trampolines(self) -> list[codeview.Trampoline]:
+        """Incremental-link jump stubs (S_TRAMPOLINE) across all module streams.
+
+        Deliberately not part of `functions()`: the record carries no name, and
+        inventing one would put a symbol in the listing that the PDB does not
+        contain. Each gives a code range and the address it jumps to, which
+        callers can resolve with `to_rva()`.
+        """
+        out: list[codeview.Trampoline] = []
+        for mod in self.dbi.modules:
+            out.extend(codeview.extract_trampolines(self.module_symbol_bytes(mod)))
+        return out
+
+    def id_table(self) -> IdTable | None:
+        """The IPI stream's item id -> name map, or None when there is none."""
+        if self._id_table is _UNREAD:
+            self._id_table = (IdTable.parse(self.msf.read_stream(STREAM_IPI))
+                              if self.msf.is_valid_stream(STREAM_IPI) else None)
+        return self._id_table
+
+    def inline_sites(self) -> list[InlineFunction]:
+        """Functions inlined into other functions, with the code they occupy.
+
+        These are invisible to `functions()` by construction: an inlined body
+        has no entry point, so it has no procedure record and no public. On the
+        rust fixture there are fifteen of them for every procedure record, which
+        makes them the largest naming gap in the parser.
+
+        Names come from the IPI stream, which is the only place they exist --
+        `S_INLINESITE` names its inlinee by item id. Without that stream the
+        sites are still located, and `name` is empty.
+        """
+        ids = self.id_table()
+        out: list[InlineFunction] = []
+        for mod in self.dbi.modules:
+            body = self.module_symbol_bytes(mod)
+            if not body:
+                continue
+            procs: list[tuple[int, codeview.ProcSymbol]] = []
+            sites: list[tuple[int, codeview.InlineSite]] = []
+            for rec in codeview.iter_records(body):
+                try:
+                    if rec.kind in codeview.PROC_KINDS:
+                        procs.append((rec.offset + CV_SIGNATURE_SIZE,
+                                      codeview.parse_proc(rec.kind, rec.payload)))
+                    elif rec.kind == codeview.S_INLINESITE:
+                        sites.append((rec.offset + CV_SIGNATURE_SIZE,
+                                      codeview.parse_inline_site(rec.payload)))
+                except EOFError:
+                    continue  # shorter than its kind requires; skip the record
+            if not sites:
+                continue
+
+            starts = [start for start, _proc in procs]
+            for site_offset, site in sites:
+                # The enclosing procedure is the last one to start before this
+                # record and still be open at it; its End says where it closes.
+                i = bisect.bisect_right(starts, site_offset) - 1
+                if i < 0:
+                    continue
+                _start, proc = procs[i]
+                if proc.end and site_offset >= proc.end:
+                    continue
+                # Annotation offsets are relative to the procedure's start.
+                ranges = [(proc.offset + offset, length)
+                          for offset, length in site.ranges]
+                if not ranges:
+                    continue
+                out.append(InlineFunction(
+                    name=(ids.get(site.inlinee) if ids else None) or "",
+                    inlinee=site.inlinee,
+                    segment=proc.segment,
+                    offset=ranges[0][0],
+                    rva=self._rva(proc.segment, ranges[0][0]),
+                    ranges=ranges,
+                    parent=proc.name,
+                    parent_offset=proc.offset,
+                    parent_code_size=proc.code_size,
+                ))
+        return out
 
     def data_symbols(self) -> list[codeview.DataSymbol]:
         """Global/static data symbols (S_GDATA32/S_LDATA32) across all modules,
@@ -242,17 +625,117 @@ class PDB:
             out.extend(codeview.extract_data(self.msf.read_stream(self.dbi.symrecord_stream_index)))
         return out
 
+    def _symbol_records(self) -> bytes:
+        idx = self.dbi.symrecord_stream_index
+        if not self.msf.is_valid_stream(idx):
+            return b""
+        return self.msf.read_stream(idx)
+
+    def constants(self) -> list[codeview.Constant]:
+        """Named compile-time values (S_CONSTANT) from the symbol-record stream.
+
+        The global set, the one the globals hash indexes. Module streams carry
+        their own file-static constants, overlapping these by name; merging the
+        two would double-count, so they are deliberately not included.
+
+        A constant whose value uses a numeric leaf purepdb does not decode is
+        skipped -- its name sits after the value, so an unknown value length
+        means the name cannot be reached either.
+        """
+        return codeview.extract_constants(self._symbol_records())
+
+    def udts(self) -> list[codeview.UserDefinedType]:
+        """Type names (S_UDT) from the symbol-record stream.
+
+        `type_index` refers to the TPI stream, which purepdb does not read, so
+        it is carried uninterpreted. The names are useful on their own.
+        """
+        return codeview.extract_udts(self._symbol_records())
+    # -- named streams and line info ----------------------------------------
+
+    def named_streams(self) -> dict[str, int]:
+        """Stream name -> index, from the map at the end of the PDB Info stream.
+
+        `/names` and `/LinkInfo` are what real linkers put here.
+        """
+        return parse_named_stream_map(self.msf.read_stream(STREAM_PDB_INFO))
+
+    def string_table(self) -> StringTable | None:
+        """The `/names` global string table, or None when the PDB has none."""
+        if self._string_table is _UNREAD:
+            index = self.named_streams().get("/names", 0xFFFF)
+            self._string_table = (
+                StringTable.parse(self.msf.read_stream(index))
+                if self.msf.is_valid_stream(index) else None
+            )
+        return self._string_table
+
+    def lines(self):
+        """Yield a `Line` for every source-line record, in module order.
+
+        Empty when the PDB carries no C13 line info, or no `/names` stream to
+        resolve file names against -- both of which are ordinary rather than
+        errors. There are 70157 of these in sqlite3 x86, so this is a generator.
+        """
+        strings = self.string_table()
+        if strings is None:
+            return
+        for mod in self.dbi.modules:
+            region = self.module_c13_bytes(mod)
+            if not region:
+                continue
+            subsections = list(c13.iter_subsections(region))
+            files: dict[int, int] = {}
+            for sub in subsections:
+                if sub.kind == c13.DEBUG_S_FILECHECKSUMS:
+                    files.update(c13.parse_file_checksums(sub.payload))
+            if not files:
+                continue
+            for sub in subsections:
+                if sub.kind != c13.DEBUG_S_LINES:
+                    continue
+                for entry in c13.parse_lines(sub.payload):
+                    name_offset = files.get(entry.file_offset)
+                    if name_offset is None:
+                        continue
+                    file = strings.get(name_offset)
+                    if file is None:
+                        continue
+                    yield Line(
+                        rva=self._rva(entry.segment, entry.offset),
+                        segment=entry.segment,
+                        offset=entry.offset,
+                        file=file,
+                        line=entry.line,
+                        module=mod.module_name,
+                    )
+
     def diagnose(self) -> Diagnostics:
         """Summarise what this PDB actually contains. See `Diagnostics`."""
         kinds: dict[int, int] = {}
         with_symbols = 0
+        truncations: list[tuple[str, codeview.Truncation]] = []
+        malformed = 0
         for mod in self.dbi.modules:
             body = self.module_symbol_bytes(mod)
             if not body:
                 continue
             with_symbols += 1
-            for kind, count in codeview.count_kinds(body).items():
+            malformed += codeview.count_malformed_records(body)
+            report: list[codeview.Truncation] = []
+            for kind, count in codeview.count_kinds(body, truncation=report).items():
                 kinds[kind] = kinds.get(kind, 0) + count
+            for t in report:
+                truncations.append((f"module {mod.index} ({mod.module_name})", t))
+
+        idx = self.dbi.symrecord_stream_index
+        if self.msf.is_valid_stream(idx):
+            symrecords = self.msf.read_stream(idx)
+            malformed += codeview.count_malformed_records(symrecords)
+            t = codeview.find_truncation(symrecords)
+            if t is not None:
+                truncations.append(("the symbol-record stream", t))
+
         return Diagnostics(
             modules=len(self.dbi.modules),
             modules_with_symbols=with_symbols,
@@ -260,20 +743,30 @@ class PDB:
             public_records=len(self.public_symbols()),
             has_section_headers=self._sections is not None,
             module_kinds=kinds,
+            malformed_records=malformed,
+            truncations=truncations,
+            derived_sections=len(self.derived_sections),
+            omap_entries=len(self._omap) if self._omap else 0,
+            has_original_sections=self._original_sections is not None,
+            section_contributions=len(self._contributions),
+            inline_sites=kinds.get(codeview.S_INLINESITE, 0),
         )
 
     def _is_code(self, segment: int) -> bool:
-        return self._sections is not None and self._sections.is_executable(segment)
+        table = self._symbol_sections
+        return table is not None and table.is_executable(segment)
 
     def functions(self, *, code_publics: bool = True) -> list[Function]:
         """Return all discoverable functions, merged by (segment, offset).
 
-        Two sources feed this: module proc records (rich -- they carry code
-        size) and publics (broad -- they cover thunks, CRT stubs and folded
-        entries that have no proc record). Where both describe one address the
-        proc record wins the `name` slot; every other name lands in `aliases`
-        rather than being dropped, because folded bodies really do have several
-        correct names.
+        Three sources feed this: module proc records (rich -- they carry code
+        size), publics (broad -- they cover CRT stubs and folded entries that
+        have no proc record), and S_THUNK32 records (named jump stubs). Where
+        several describe one address the first to claim it wins the `name`
+        slot -- procs, then publics, then thunks -- and every other name lands
+        in `aliases` rather than being dropped, because folded bodies really do
+        have several correct names, and because a thunk's name is the
+        undecorated spelling of the public at the same address on x86.
 
         A public counts as a function when `PUBLIC_FLAG_FUNCTION` is set *or*
         it resolves into an executable section. The second clause is not
@@ -283,6 +776,10 @@ class PDB:
         Pass `code_publics=False` for flag-only behaviour.
         """
         seen: dict[tuple[int, int], Function] = {}
+
+        def module_name(segment, offset):
+            mod = self.module_of(segment, offset)
+            return mod.module_name if mod else None
 
         def add(key, name, make):
             fn = seen.get(key)
@@ -296,22 +793,34 @@ class PDB:
                 name=p.name,
                 segment=p.segment,
                 offset=p.offset,
-                rva=self._rva(p.segment, p.offset),
+                rva=self.to_rva(p.segment, p.offset),
                 code_size=p.code_size,
                 source="proc",
+                module=module_name(p.segment, p.offset),
             ))
 
         for pub in self.public_symbols():
-            if not pub.is_function:
-                if not (code_publics and self._is_code(pub.segment)):
-                    continue
+            if not pub.is_function and not (code_publics
+                                           and self._is_code(pub.segment)):
+                continue
             add((pub.segment, pub.offset), pub.name, lambda pub=pub: Function(
                 name=pub.name,
                 segment=pub.segment,
                 offset=pub.offset,
-                rva=self._rva(pub.segment, pub.offset),
+                rva=self.to_rva(pub.segment, pub.offset),
                 code_size=None,
                 source="public",
+                module=module_name(pub.segment, pub.offset),
+            ))
+
+        for t in self.thunks():
+            add((t.segment, t.offset), t.name, lambda t=t: Function(
+                name=t.name,
+                segment=t.segment,
+                offset=t.offset,
+                rva=self.to_rva(t.segment, t.offset),
+                code_size=t.length,
+                source="thunk",
             ))
 
         return sorted(seen.values(), key=lambda f: (f.rva is None, f.rva or 0, f.name))
