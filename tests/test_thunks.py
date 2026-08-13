@@ -20,6 +20,7 @@ from tests._synth import (
     pub32,
     publics_hash_stream,
     record_offsets,
+    section_contributions,
     section_header,
     thunk32,
     trampoline,
@@ -68,7 +69,7 @@ def test_a_record_too_short_for_its_kind_is_skipped_not_raised(kind):
     assert len(codeview.extract_trampolines(short + good_tramp)) == 1
 
 
-def _pdb(module_records: bytes, publics=()):
+def _pdb(module_records: bytes, publics=(), contributions=()):
     module_syms = module_sym_stream(module_records)
     mods = module_info("main.obj", "main.obj", sym_stream=5,
                        sym_byte_size=len(module_syms))
@@ -77,7 +78,9 @@ def _pdb(module_records: bytes, publics=()):
         struct.pack("<III", 20000404, 1, 1) + b"\x00" * 16,
         b"",
         dbi_stream(public_stream=4, symrecord_stream=7, module_list=mods,
-                   dbg_header=[0xFFFF] * 5 + [6]),
+                   dbg_header=[0xFFFF] * 5 + [6],
+                   sec_contrib=(section_contributions(list(contributions))
+                                if contributions else b"")),
         publics_hash_stream(record_offsets(list(publics))),
         module_syms,
         section_header(".text", 0x1000) + section_header(".data", 0x2000),
@@ -108,6 +111,20 @@ def test_a_proc_at_the_same_address_still_wins_the_name():
     pdb = _pdb(gproc32("real", 1, 0x40) + thunk32("stub", 1, 0x40))
     fn = pdb.functions()[0]
     assert (fn.name, fn.source, fn.aliases) == ("real", "proc", ["stub"])
+
+
+def test_a_thunk_only_function_is_attributed_to_its_module():
+    """A thunk with no proc or public at its address still resolves.
+
+    Attribution used to depend on a redundant record happening to share the
+    address -- which is precisely the import-thunk case it exists to cover,
+    and precisely where no such record exists.
+    """
+    pdb = _pdb(thunk32("__imp_stub", 1, 0x040),
+               contributions=[(1, 0x000, 0x100, 0)])
+    assert [(f.name, f.source, f.module) for f in pdb.functions()] == [
+        ("__imp_stub", "thunk", "main.obj"),
+    ]
 
 
 def test_trampolines_are_not_functions():

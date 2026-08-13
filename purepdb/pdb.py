@@ -821,6 +821,7 @@ class PDB:
                 rva=self.to_rva(t.segment, t.offset),
                 code_size=t.length,
                 source="thunk",
+                module=module_name(t.segment, t.offset),
             ))
 
         return sorted(seen.values(), key=lambda f: (f.rva is None, f.rva or 0, f.name))
