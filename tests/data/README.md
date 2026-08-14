@@ -79,3 +79,86 @@ The shapes that once needed a fixture are now covered, two of them without one:
 Keep fixtures small, keep them own builds or public-domain sources, and record
 the toolchain here — a fixture whose provenance is unclear cannot stay in a
 public repository.
+
+## Issue #25: shapes still missing from this corpus
+
+Tracked in [issue #25](https://github.com/danielplohmann/purepdb/issues/25).
+Two PDB shapes are not represented by any file committed here:
+
+1. a toolchain-genuine PDB **without** Optional Debug Header slot 5 (no
+   section-header stream);
+2. a **genuinely BBT-processed** PDB carrying real OMAP tables (slots 3/4 and,
+   typically, slot 10).
+
+Both are exercised today by derivation (`test_sectionmap.py`, `test_omap.py`),
+but neither has been checked in because no redistributable example has been
+found.
+
+### How to probe a candidate
+
+`tools/probe_symbol_pdb.py` fetches a PE's symbol-server PDB (via the RSDS
+record) or inspects a local `.pdb`, then prints slot occupancy and runs
+`purepdb diagnose()`:
+
+```bash
+# from a PE on disk (downloads the matching PDB):
+python tools/probe_symbol_pdb.py /path/to/module.dll -o /tmp/probe
+
+# from a PDB already downloaded:
+python tools/probe_symbol_pdb.py /tmp/probe/ntdll.pdb
+```
+
+The symbol-server URL is
+`https://msdl.microsoft.com/download/symbols/<name>/<guid><age:X>/<name>` where
+`guid` and `age` come from the PE's `IMAGE_DEBUG_TYPE_CODEVIEW` / RSDS entry.
+
+### BBT-processed PDB with real OMAP — found, not committable
+
+**Windows 10/11 system binaries do not carry OMAP.** Post-link reordering moved
+into PGO at compile/link time; modern `ntdll.dll` PDBs have slot 5 present and
+slots 3/4/10 absent. Do not spend time on current Windows builds for this shape.
+
+**Windows XP-era symbol-server PDBs do carry OMAP.** Probed 2026-08-14 against
+`msdl.microsoft.com` (files kept outside this repository):
+
+| PDB | GUID+age | OMAP entries | slot 5 | slot 10 | purepdb |
+|---|---|---:|---|---|---|
+| `ntdll.pdb` (XP SP2) | `A618C674A4FC40F5B1781029C2C7F68E2` | 37 118 | present | present | 2 213 functions, 0 warnings |
+| `ntdll.pdb` (XP, alt build) | `1751003260CA42598C0FB326585000ED2` | 37 061 | present | present | 2 207 functions |
+| `ntkrnlmp.pdb` (XP) | `B883868B88CB415A92EC010CF6A115A52` | 145 549 | present | present | 8 158 functions |
+
+These are the first real-world OMAP tables purepdb has been run against. They
+confirm the parser handles a stripped public PDB with OMAP and original section
+headers — proc records are absent (public-sourced listing only), and every
+address resolves.
+
+**They cannot be added to `tests/data/`.** The Microsoft Debugging Tools for
+Windows license terms prohibit redistributing symbol files accessed from the
+symbol server. The acceptance criterion in #25 explicitly allows recording that
+a shape *cannot* be sourced redistributably; this is that record.
+
+Manual verification: download one of the PDBs above, then
+`purepdb diagnose <path>` — `omap entries` is printed whenever slot 4 or slot
+10 is present.
+
+### Slot-5-less PDB — not found
+
+Every committed fixture (`sqlite/`, `rustpe/`, `rustpe32/`) has slot 5
+present. Every symbol-server PDB probed for the OMAP search above also had slot
+5 present (including the XP OMAP files, which carry *both* final section
+headers and the pre-BBT original table in slot 10).
+
+No redistributable candidate has been identified. Plausible sources called out
+in #25 — an older linker, a non-Microsoft toolchain, or a constructed PDB from
+a writer — remain untried here. Until one is built or found under a license
+this repository can ship, `test_sectionmap.py` remains the evidence for the
+fallback path.
+
+### Win10 `ntdll` (issue comment, confirmed)
+
+A Windows 10 VM `ntdll.dll` + symbol-server PDB (not committed) parsed with no
+warnings: 4 055 functions, 1 428 proc records agreeing with 1 428 proc refs,
+and 12 extra functions from the `code_publics` rule — all real `.text` symbols
+(`ExpInterlockedPopEntrySListResume`, `KiUserCallbackDispatcherContinue`,
+`RtlpUmsThreadYield`). Slots 3/4/10 absent; slot 5 present. Useful as a
+parser smoke test on a vendor stripped public PDB, but not an OMAP fixture.
