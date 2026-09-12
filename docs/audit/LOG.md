@@ -165,3 +165,23 @@ warned about, and a missing IPI stream is warned about as well (it was not).
   padding; CLI test; damaged-End test that actually pins the coordinate fix.
 - #59 `release/modernize-release-workflow` +1 commit: floor back to 3.11; the
   bump lives on `python-3.12-floor` (1 commit from main, tested on 3.12).
+
+### Final differential run (fixes branch, 13 checks)
+
+`dev/validate_against_llvm.py` over 257 PDBs — every fixture, python.org
+2.7/3.4/3.5/3.8/3.12/3.13/3.14 (x64, x86, arm64), symbol-server Win7/10/11
+and XP, self-built clang/lld and rust: **257 of 257 agree with llvm-pdbutil
+on every check** (the five XP files on the checks llvm-pdbutil survives —
+contributions and lines — since it crashes on their type stream).
+`dev/audit_corpus.py` with the fixes branch over msdl/xp/python/clang/rust/
+corrupt: 0 refused among real files, 0 escaped exceptions anywhere.
+
+xul.pdb (1.9 GB, mmap): open 1.8 s / 267 MB RSS, publics 3.4 s, functions()
+230 s / 3.2 GB RSS on the fixes branch — the perf track's target.
+
+Branch logistics: the session's configured git email is refused by GitHub's
+privacy setting, so every branch was replayed (cherry-pick -n + commit -C
+--author, trees verified identical) under the noreply identity and pushed as
+`audit/fixes-2026-09`, `audit/research-log`, `pr53-clean`, `pr59-clean`,
+`python-3.12-floor-clean`. Updating the two PR heads needs a refspec push
+this session could not make; see prs.md.

@@ -1,10 +1,13 @@
 # Branches ready as pull requests (2026-09 audit)
 
-All branches are on `r0ny123/purepdb`. Base is upstream `main` at e978f3a
+All branches are on `r0ny123/purepdb`. Branch names carry a `-clean` or
+`audit/` prefix because the first push was refused for the author email the
+session was configured with; the replayed branches carry the GitHub noreply
+identity and identical trees. Base is upstream `main` at e978f3a
 (0.5.0) unless noted. Each was gated on the full suite, `ruff check`,
 `ty check`, and a 2000-input fuzz pass before every commit.
 
-## `fix/audit-2026-09` — correctness fixes from the corpus audit
+## `audit/fixes-2026-09` — correctness fixes from the corpus audit
 
 Title: *read what MSVC writes: S_INLINESITE2, separated code, the fused
 annotation cursor, stripped files, and the large block sizes*
@@ -45,9 +48,11 @@ See `docs/audit/perf.md` on that branch for before/after per operation and
 file. Output snapshots are byte-identical to the unmodified parser on every
 fixture and corpus file (inline sites excepted where main is known-wrong).
 
-## `fix-correctness-audit` (PR #53) — one commit added
+## `pr53-clean` = `fix-correctness-audit` (PR #53) + one commit
 
-Per the review in `pr-review.md`: DBI overrun clamps and is diagnosed
+Fast-forward of the PR head. To update the PR: `git push origin
+pr53-clean:fix-correctness-audit` (a refspec push this session was not
+allowed to make). Per the review in `pr-review.md`: DBI overrun clamps and is diagnosed
 (`Diagnostics.dbi_overrun`), negative sizes still raise; C13 zero padding is
 not damage; CLI test for the C13 warning; the coordinate-space test pins its
 fix with a damaged End. Merge after #52 (one keep-both conflict hunk).
@@ -56,12 +61,14 @@ fix with a damaged End. Merge after #52 (one keep-both conflict hunk).
 
 Counts proven identical on all fixtures.
 
-## `release/modernize-release-workflow` (PR #59) — one commit added
+## `pr59-clean` = `release/modernize-release-workflow` (PR #59) + one commit
 
-The Python floor bump is reverted here (it was an unrelated breaking change
+Fast-forward of the PR head; `git push origin
+pr59-clean:release/modernize-release-workflow` updates the PR. The Python
+floor bump is reverted here (it was an unrelated breaking change
 riding a tooling PR) and lives on its own branch:
 
-## `python-3.12-floor` — new, one commit from main
+## `python-3.12-floor-clean` — new, one commit from main
 
 `requires-python >=3.12`, CI matrix, ruff target, docs, `Removed` entry.
 Tested on 3.12. Merge whenever the ecosystem decision is taken.
