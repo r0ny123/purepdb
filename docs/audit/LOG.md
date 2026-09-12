@@ -123,3 +123,19 @@ branch under contention; 96917 procs, 139920 publics, 1584395 inline sites,
   211 python.org PDBs (2.7 VS2008, 3.4 VS2010, 3.5 VS2015, 3.8, 3.12, 3.13,
   3.14; x64/x86/arm64) agree on every check. The 20 "no inlinee" errors in
   the first python run were the pre-fix validator; gone on re-run.
+
+### Section Map reconstruction measured on the corpus
+
+`sections_from_map` vs the real table on 33 corpus PDBs with slot 5:
+- exact on every user-mode link.exe and lld image (python 2.7–3.14 incl.
+  arm64, node x64/arm64, clang, rust std, Win10/11 kernel32/ntdll/ucrtbase);
+- exact against **slot 10** on the five BBT-processed files (the map describes
+  the pre-BBT layout, so comparing to slot 5 there is the wrong question);
+- wrong on kernel-mode images linked with a small /ALIGN: hal.dll first
+  section at 0x380 (align 0x80), ntkrnlpa at 0x600 (0x200) — the documented
+  0x1000 assumption; ntkrpamp happens to match;
+- ntkrnlmp (33 sections): addresses all exact, but section 28 is executable
+  in the real table while the map's flags (0x10b) lack SEG_EXECUTE, so with
+  slot 5 gone its publics would not count as code publics.
+GUID/age agree with llvm-pdbutil on 68/68 files.
+Fuzzer gained --seed-dir; a run over msdl+xp+clang+rust seeds is in progress.
