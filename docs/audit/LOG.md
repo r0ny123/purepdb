@@ -207,3 +207,23 @@ Re-measured after 2e7fb98: diagnose() 866 s, peak RSS 7.2 GB (from 11.4 GB;
 per-module garbage on modules hundreds of MB long — the perf track's
 single-pass survey is the next lever; a per-module `gc`/streaming walk the
 one after.
+
+## PR review
+
+Full write-up: `docs/audit/pr-review.md`. Verdicts: #52 merge as is (diagnose()
+output byte-identical on all 7 fixtures between main and the branch; timing
+within noise, as the commit says; one trivial keep-both conflict with #53).
+#53 merge with changes: the named-streams, PublicsStream and C13 fixes are real
+and proven before/after, but `_check_substream` raising on a past-end size turns
+a DBI stream missing its last 8 bytes from fully readable into unopenable
+(clamp + `Diagnostics.dbi_overrun` suggested; the negative-size raise stays),
+`iter_subsections` reports 1-4 trailing zero pad bytes as "lines missing", and
+the inline-site signature test passes on main unchanged so it pins nothing.
+#59 merge with changes: pins verified real via ls-remote, guard tests are
+network-free, `make package` fine, but the 3.12 floor is an unrelated breaking
+change inside a tooling PR (split it out; `msf.py:36` comment goes stale; the
+suite is no longer run against the built artefact, only imported). Dependabot
+#56/#57/#58 merge as is: ruff 0.16.6, ty 0.0.79 and build 1.6.0 all clean on
+this tree. Suggested order: deps, #52, #53, then #59 only after the maintainer
+creates the trusted publishers and environments. Coordinator has since applied
+the #53/#59 suggestions on `pr53-clean` / `pr59-clean`.

@@ -22,15 +22,23 @@ venv), `/home/user/wt/exp/c13pad.py` (C13 padding), and the per-worktree
 | #57 | `dependabot/pip/ruff-0.16.6` | **merge as is** | `ruff check .` clean under 0.16.6 |
 | #58 | `dependabot/pip/ty-0.0.79` | **merge as is** | `ty check` clean under 0.0.79 |
 
+**Follow-up by the coordinator after this review**: the changes suggested
+below for #53 were applied on branch `pr53-clean` (overrun clamps with
+`Diagnostics.dbi_overrun`, the C13 zero-padding guard, the CLI test and a
+damaged-`End` test that pins the inline-site fix), and for #59 on
+`pr59-clean` (floor back to 3.11; the bump moved to
+`python-3.12-floor-clean` as its own change). The sections below describe
+the PR branches as submitted.
+
 Baseline on every branch (`pytest -q`, `ruff check .`, `ty check`,
 `tools/fuzz.py --iterations 2000 --seed 0`):
 
 | worktree | tests | ruff | ty | fuzz |
 |---|---|---|---|---|
-| main | 588 passed | clean | clean | FUZZ_MAIN |
-| #52 | 588 passed | clean | clean | FUZZ_52 |
-| #53 | 596 passed | clean | clean | FUZZ_53 |
-| #59 (py3.12 venv) | 601 passed | clean | clean | FUZZ_59 |
+| main | 588 passed | clean | clean | clean (rc 0, 2000 inputs) |
+| #52 | 588 passed | clean | clean | clean (rc 0, 2000 inputs) |
+| #53 | 596 passed | clean | clean | clean (rc 0, 2000 inputs) |
+| #59 (py3.12 venv) | 601 passed | clean | clean | clean (rc 0, 2000 inputs) |
 | deps (ty 0.0.79 + ruff 0.16.6 + build 1.6.0 installed) | 588 passed | clean | clean | n/a |
 
 Note the `AGENTS.md` figure "583 tests pass" is already stale on `main`
@@ -85,7 +93,9 @@ the tag deleted and re-pushed.
    3539/685, syzygy 241/956, tls 2/10 (procs/publics).
 2. *"Not a measurable speedup."* — Consistent with measurement. Best of 7
    `diagnose()` calls, quiet machine:
-   TIMING_RESULTS
+   `main`: sqlite x86 492/479 ms, rustpe 165/165 ms, syzygy 86/85 ms;
+   `#52`: 495/472 ms, 166/163 ms, 83/84 ms (two interleaved runs each).
+   Within noise, as claimed.
    The removed work (`module_procs()` re-slicing, `public_symbols()` sorting
    through the publics hash) is small next to the three `count_*` walks per
    module, as the commit says.
