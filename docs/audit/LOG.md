@@ -202,3 +202,8 @@ current clang-cl build). The memory was diagnose() materialising eleven
 million InlineFunction objects to count two integers; `_inline_listing`
 gained a `keep=False` mode (commit 2e7fb98) and the re-measurement is in
 progress. Time is the perf track's problem (single-pass survey).
+Re-measured after 2e7fb98: diagnose() 866 s, peak RSS 7.2 GB (from 11.4 GB;
+~1.9 GB of that is the mapped file's resident pages). The rest is transient
+per-module garbage on modules hundreds of MB long — the perf track's
+single-pass survey is the next lever; a per-module `gc`/streaming walk the
+one after.
