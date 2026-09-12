@@ -227,3 +227,130 @@ suite is no longer run against the built artefact, only imported). Dependabot
 this tree. Suggested order: deps, #52, #53, then #59 only after the maintainer
 creates the trusted publishers and environments. Coordinator has since applied
 the #53/#59 suggestions on `pr53-clean` / `pr59-clean`.
+
+## Corpus
+
+Built by `tools/fetch_corpus.py` (stages `--fetch --build --corrupt --omap
+--smoke --manifest`); lives at `/home/user/corpus` (3.1 GB, plus 780 MB of
+downloaded archives in `_dl/`), never committed. Full provenance and the
+smoke-pass numbers are in `docs/audit/corpus.md` (copy of
+`/home/user/corpus/MANIFEST.md`). 427 files, 421 PDBs + 6 PE images.
+
+### What is in it
+
+- **python.org** (211 PDBs, 481 MB, PSF): 2.7.18 (VS2008), 3.4.4 (VS2010),
+  3.5.0 amd64+win32 (VS2015), 3.8.10 amd64+win32 (VS2019), 3.12.0, 3.13.15,
+  3.14.7 amd64+arm64 (VS2022). All PGO builds; python3x.pdb 15-30 MB.
+  MSF block size 1024 on the 2.7/3.4/3.5 files, 4096 later. The bundled
+  libcrypto/libssl PDBs and 3.4.4's are the only incrementally-linked
+  MSVC files in the corpus (`Is incrementally linked: true`).
+- **nodejs.org** v22.0.0 node.pdb for win-x64 (355 MB, 3357 streams) and
+  win-arm64 (346 MB). VS2022, /LTCG.
+- **Microsoft symbol server** (9 PDBs, 30 MB, NOT redistributable): Win11
+  22H2 x64 ntdll/kernel32/ucrtbase, Win7 SP1 x86 ntdll/kernel32/user32
+  (GUIDs from public crash-stats.mozilla.org module lists), two ntkrnlmp and
+  one ntdll from URLs printed in public bug reports.
+- **Windows XP SP3 x86** (5 PDBs, 6 MB, NOT redistributable) from the
+  archive.org `xp_pdb` symbol-store mirror: ntdll, kernel32, ntkrnlpa,
+  ntkrpamp, hal.
+- **PE images** for the six crash-stats-identified msdl PDBs, fetched from
+  the same server by TimeDateStamp+SizeOfImage (the `code_id` in the same
+  crash report). Every image's CodeView record names the fetched PDB
+  (GUID+age verified with `codeview_identity()`).
+- **Mozilla** xul.pdb for Firefox 153.0.4 x64 (1.93 GB uncompressed, from a
+  434 MB `xul.pd_` cab; 594 streams, 472135 blocks). clang-cl + lld-link.
+- **Self-built clang/clang-cl 18 + lld-link 18** (16 PDBs): generated C with
+  300 unique + 40 byte-identical functions; x64/x86/arm64; /O2 vs /Od;
+  /DEBUG:FULL, /DEBUG, /DEBUG:GHASH; /OPT:ICF (folds the 40 to 1 record +
+  39 aliases); -gline-tables-only; /INCREMENTAL (a no-op in lld); C++ with
+  17 inline sites, adjustor thunks and templates. Freestanding,
+  `/nodefaultlib`, as the tls fixture.
+- **Self-built rustc 1.94.1 + rust-lld** (10 PDBs): the rustpe32 no_std
+  crate for x64/x86/arm64, release and debug and line-tables-only; a
+  std-using crate for x64 (release+debug), x86 and arm64, linked with
+  llvm-dlltool import libraries generated from the undefined `__imp_`
+  names and `ret` stubs for the 10 CRT symbols (memcpy, __CxxFrameHandler3,
+  `??_7type_info@@6B@`, _tls_index ...).
+- **Corrupt** (168): 56 variants each of the tls, rustpe32 and syzygy
+  fixtures: 14 truncations, zeroed/0xFF blocks, every superblock field
+  patched to 0/1/odd/huge/max, directory stream count and sizes patched,
+  block lists all-zero / out of range, MSF 2.00 and Portable PDB magics,
+  bit flips at 3 densities, padding and a duplicated first block.
+
+### Smoke pass (llvm-pdbutil --summary, purepdb diagnose, timed functions)
+
+- **No traceback anywhere.** Every non-corrupt file except xul.pdb opened
+  and listed functions; every corrupt file either opened or failed with a
+  clean `error:` line. 0 tracebacks in 168 corrupt variants.
+- **xul.pdb (1.93 GB): both `diagnose` and `functions` exceeded the 600 s
+  timeout**, at 3.2 GB RSS after 514 s (coordinator measured 866-954 s and
+  7-11 GB RSS to completion). llvm-pdbutil summarises it in 0.02 s. This
+  is the one file where purepdb is not usable interactively.
+- **node.pdb (355 MB): diagnose 100 s, functions 122 s, 75148 functions
+  from 96917 procs + 139920 publics** (arm64: 106 s / 125 s / 71137).
+  ~3 MB/s; the python3x.pdb files (15-30 MB) take 4-7 s each, so the rate
+  is roughly linear in size, no cliff below xul.
+- **Stripped Microsoft files.** All 14 msdl/xp PDBs are `Is stripped: true`
+  per llvm-pdbutil. The Win7/XP ones (BuildNumber 9.00 / 0x3800) have 0
+  proc records and 18 streams; functions come entirely from publics
+  (Win7 x86 kernel32: 11367 functions from 12193 publics). The Win10/11
+  ones keep procs (ntdll 7085...: 1484 procs, 6524 publics, 4517
+  functions). purepdb printed no warning for any of them (a stripped file
+  with no module to walk is silent) -- the fixes track has this.
+- **BuildNumber raw values**: XP files 0x3800 (bit 15 clear: the old
+  format, so "56.00" is not a version); Win7 0x8900 (9.00); Win10 kernel
+  0x8b00 (11.00); ucrtbase 0x8e0e (14.14); Win11 ntdll/kernel32 0x8e1e
+  (14.30). Table in corpus.md.
+- **clang 18 `-gcodeview` without `-g`** emits only S_OBJNAME/S_COMPILE3/
+  S_ENVBLOCK: the PDB has 350 publics and 0 procs and purepdb warns exactly
+  as for /DEBUG:FASTLINK. Kept as `clang/c_arm64_publics_only.pdb`.
+- **Corrupt variants, purepdb vs llvm-pdbutil**: purepdb opens 35/168,
+  llvm-pdbutil 27/168. purepdb opens 17 that llvm refuses (FPM index 0/3,
+  num_blocks 0, PDB-info stream size 1, block lists all zero, light bit
+  flips) -- it reads what it needs and never validates the FPM or the
+  block count. llvm opens 9 that purepdb refuses: `magic_garbage` and
+  `zero_superblock` (llvm reports success on --summary yet has no data),
+  and `nblocks_double` (superblock claims 2x the blocks the file holds:
+  purepdb says "file truncated", llvm does not care). The truncation
+  message for `nblocks_double` is arguably wrong -- the file is not
+  truncated, the header lies -- but the refusal is right.
+  `bitflip_08_per_4k` on syzygy opened with 19 truncated streams and 211
+  functions; on tls with 1 truncated stream and 2 functions. No variant
+  took more than 0.6 s.
+- **OMAP ground truth** (`dev/validate_omap_against_windows.py` over the
+  six paired images, report in corpus.md): Win7 x86 ntdll 1953/1959 exact,
+  user32 632/632, kernel32 863/1272 exact with the residue clustered at
+  +13 (210) / -11 (45) / +7 (21) -- the export-stub offsets documented in
+  the validator, not translation errors. 0 of 3863 exports match the
+  untranslated address. The Win11 pairs carry no slot 10 (BBT ended
+  between Win7 and Win10), so they only confirm plain resolution
+  (ntdll 2456/2458, ucrtbase 2469/2480, kernel32 863/881).
+
+### Could not be obtained
+
+- **XP PE images.** winbindex indexes 10.0 only; the last POSReady 2009
+  packages (KB4493563 ships ntdll/kernel32 5.1.2600.7682) are
+  intra-package deltas (`_sfx_NNNN._p`, mspatcha) that need the base
+  files, and the 2018 packages on archive.org carry a different ntkrnlpa
+  GUID (F870A15B...) than the archived PDB (F83A340E...). So the XP OMAP
+  pairs (kernel32 42544 entries, ntdll 37474) are unverified here; the
+  validator docstring records an earlier XP run from a real install.
+- **Stripped self-built PDBs**: lld-link 18 ignores `/pdbstripped`
+  ("not yet supported"), so the only stripped files are Microsoft's.
+- **Incrementally-linked lld output**: lld's `/incremental` touches only
+  the import library; no S_TRAMPOLINE in any self-built file. The python
+  libssl/libcrypto and 3.4.4 files are the incremental MSVC ones.
+- **Rust `/PDBSTRIPPED` variants**: same lld limitation.
+- **node win-x86**: skipped deliberately (size budget); x64 and arm64 kept.
+- **MSF block sizes other than 1024/4096**: none in the corpus (233 files
+  at 4096, 19 at 1024); 8192+ would need a multi-GB link.exe PDB.
+
+### Decisions
+
+- Corpus root outside the repo; `dev/*` gitignore stays as is. Microsoft
+  files live under `msdl/`, `msdl_images/`, `xp/` and are marked
+  NOT redistributable in every manifest row.
+- Self-built files are compiled in `/tmp/build/...` so the recorded
+  S_OBJNAME/S_ENVBLOCK paths are neutral (same reason as tests/data/tls).
+- Every crash-stats crash id used for a GUID is recorded in the manifest so
+  the pairing is re-derivable.
