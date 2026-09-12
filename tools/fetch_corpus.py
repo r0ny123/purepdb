@@ -115,9 +115,11 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess:
+def run(cmd: list[str], cwd: Path | None = None,
+        timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     print("  $", " ".join(cmd), flush=True)
-    return subprocess.run(cmd, check=True, text=True, capture_output=True, **kw)  # type: ignore[call-overload]
+    return subprocess.run(cmd, check=True, text=True, capture_output=True,
+                          cwd=cwd, timeout=timeout)
 
 
 def curl(url: str, dest: Path, user_agent: str | None = None) -> bool:
@@ -1049,11 +1051,12 @@ GROUP_TITLES = {
 def human(n: int | None) -> str:
     if n is None:
         return "-"
+    size = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024 or unit == "GB":
-            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
-        n /= 1024  # type: ignore[assignment]
-    return str(n)
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return str(size)
 
 
 def write_manifest(prov: dict, smoke: dict, dest: Path, local: bool) -> None:
