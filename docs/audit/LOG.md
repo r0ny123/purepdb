@@ -55,3 +55,42 @@
   ntdll 37474. First genuinely BBT-processed files this project has had.
   Ground-truth check needs the matching PE images — requested from the
   corpus track (symbol server serves images by TimeDateStamp+SizeOfImage).
+
+### 2026-09-12 — inline sites were wrong on MSVC output (fixed on fix/audit-2026-09)
+
+Three findings from the python.org PDBs (MSVC 14.3x, PGO), all in one commit:
+
+- **MSVC writes `S_INLINESITE2`**, not `S_INLINESITE`: 48608 of the 48642
+  sites in python312.pdb. 0.5.0 reported 34. llvm-pdbutil 18 prints the
+  record as a size and nothing else, so the reference could not have shown it.
+- **The fused `ChangeCodeLengthAndCodeOffset` length does not move the
+  cursor.** Four interpretations tested against proc/chunk sizes on
+  python312.pdb (79187 ranges): advance-after-fused → 5582 ranges end past
+  their procedure or chunk; no-advance → 0 overflow, 0 overlap; swapped
+  operands → overlaps. clang/rust files fit under any rule (their sites are
+  small), which is why no fixture caught it. 0.5.0 had rebuilt the validator
+  on the wrong rule and documented llvm as the odd one out. Reversed: purepdb
+  now matches llvm-pdbutil and cvinfo.h. This moves second-and-later ranges on
+  every rust-lld/clang file — recorded as address-moving in the changelog.
+- **`ChangeCodeOffsetBase n` = the n'th `S_SEPCODE` chunk** of the procedure
+  (cvinfo.h: "nth separated code chunk (main code chunk == 0)"). MSVC emits
+  `S_SEPCODE` after the proc's S_END with `sectParent:offParent` = the proc
+  address; the site's ranges are relative to the chunk start and fit its
+  length exactly (chunk 0x22: ranges (19,9),(29,5)). 21/103 sites in
+  _bz2.pdb were "unplaced" for this. Now placed; a chunk in another section
+  becomes a second InlineFunction (never seen: MSVC keeps cold code in .text).
+
+Validator: llvm-pdbutil 18 crashes (SIGSEGV in TpiStream::getNumTypeRecords)
+on all five XP-era symbol-server files; purepdb reads them and pdbparse agrees
+on every public (907/4849/2926/10469/10526). Crash is now a ToolLimitation,
+not a FAIL. Section names with control bytes (`PAGEVRFY\x1c!\x03` in
+ntkrnlmp) broke the SC-row regex; relaxed.
+
+Corpus of corrupt derivatives (182 files): 0 escaped exceptions. purepdb opens
+`bitflip_01_per_4k` (6 functions) where llvm-pdbutil refuses ("DBI Length
+does not equal sum of substreams") — relevant to the #53 discussion on
+raising vs. tolerating DBI size damage.
+
+Not found in any file: `_ST` (pre-VS2005 length-prefixed) records — the XP
+files already carry S_PUB32. python 2.7 (VS2008) has 0 inline sites. Leaving
+`_ST` support out; there is no file to test it against.
