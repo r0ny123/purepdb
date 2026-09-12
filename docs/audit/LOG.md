@@ -104,3 +104,22 @@ are absolute symbols (segment = sections+1), RVA None.
 node.pdb (354 MB, clang-cl, 3340 modules): diagnose 2m28s wall on the fixes
 branch under contention; 96917 procs, 139920 publics, 1584395 inline sites,
 0 malformed, 0 truncations, no warnings.
+
+### 2026-09-12 — OMAP verified against real BBT output; validator widened
+
+- The corpus track fetched the PE images matching the symbol-server PDBs
+  (symbol server serves images keyed by TimeDateStamp+SizeOfImage). Running
+  `dev/validate_omap_against_windows.py`: Win7 x86 kernel32 (61182 OMAP
+  entries), ntdll (67714), user32 (38222) — **0 far misses on every pair**
+  once the harness follows Win7's export stubs (hot-patch prologue + short
+  jump, +13/+7/-11 explained byte by byte) and counts exports named under a
+  different name (`Beep` → `_BeepImplementation@8`) as address agreement.
+  Untranslated counterfactual: 0 of 3857. OMAP translation is correct on
+  genuine BBT output, which the repo had never been able to check.
+- llvm-pdbutil 18 prints an S_TRAMPOLINE's thunk offset in its target slot
+  (bug in the reference). purepdb's targets verified against the `jmp rel32`
+  in sqlite3.dll: 348/348 (x64), all (x86); pinned by a new groundtruth test.
+- Validator now has 13 checks (+data, thread locals, thunks, trampolines);
+  211 python.org PDBs (2.7 VS2008, 3.4 VS2010, 3.5 VS2015, 3.8, 3.12, 3.13,
+  3.14; x64/x86/arm64) agree on every check. The 20 "no inlinee" errors in
+  the first python run were the pre-fix validator; gone on re-run.
