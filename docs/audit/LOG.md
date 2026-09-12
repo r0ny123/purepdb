@@ -1,0 +1,57 @@
+
+## Coordinator log (main session)
+
+### 2026-09-12 — context
+
+- Fork `r0ny123/purepdb` main == upstream main (e978f3a, 0.5.0). Upstream has
+  0 open issues (12 closed, all by the maintainer or r0ny123) and 6 open PRs:
+  #52 (fork `diagnose-single-pass`), #53 (fork `fix-correctness-audit`), #59
+  (fork `release/modernize-release-workflow`), and dependabot #56/#57/#58.
+  None reviewed yet. Every earlier fork PR (#1–#16) is closed/merged upstream.
+- Baseline on a clean tree: 588 tests pass (AGENTS.md says 583 — stale),
+  ruff + ty clean, fuzz 2000 clean. llvm-pdbutil 18.1.3 is on PATH.
+- Toolchains available for corpus building: clang-cl/lld-link 18, rustc
+  1.94.1 with the three windows-msvc targets, msiextract, 7z. No MSVC, so
+  nothing here can write an _ST-era or a /PDBSTRIPPED file; lld-link prints
+  "ignoring /pdbstripped flag, it is not yet supported".
+
+### Bugs found and fixed (branch fix/audit-2026-09)
+
+1. **Stripped PDBs produced no warning.** A synthetic publics-only file with
+   modules whose `sym_stream` is 0xFFFF gave `diagnose().warnings == []`.
+   Every warning is reached by walking a module stream, so a file with none
+   to walk was silent. Confirmed on all 14 Microsoft symbol-server files in
+   the corpus: `Is stripped: true` per llvm-pdbutil; the Win7/XP ones have
+   0 modules with symbols, the Win10/11 ones keep S_GPROC32/S_LPROC32 and
+   S_SEPCODE (ntdll 7085…: 1484 procs, 6524 publics, 1110 S_SEPCODE) despite
+   the flag. Fix reads DBI Flags bit 1 and BuildNumber; three new warnings.
+2. **BuildNumber is a version only with bit 15 set.** XP files carry 0x3800
+   and printed as "56.00" before the gate was added.
+3. **Block sizes 8192/16384/32768 refused.** LLVM accepts them; link.exe
+   writes them for PDBs past a few GB. Nothing in the corpus needs them yet
+   (node.pdb 350 MB is 4096), but the refusal was a hard error on exactly the
+   huge inputs.
+4. **Directory memory bomb.** Each stream's block list is bounded by the
+   directory, but nothing bounded the sum of stream sizes; a 4 MB file whose
+   lists all name block 3 would allocate GBs in `read_stream`. Sum ≤
+   num_blocks × block_size is a real invariant (checked: 0 duplicate blocks
+   across all fixtures). Now MsfError.
+5. **S_INLINESITE2 (0x115D)** undecoded — has an `invocations` u32 before the
+   annotations. **S_LPROC32_DPC/_DPC_ID (0x1155/0x1156)** not in PROC_KINDS
+   though cvinfo.h puts them on PROCSYM32. Both from the header, no corpus
+   file carries them (python/node audit pending).
+6. **DEBUG_S_LINES BlockSize below the bytes read** re-read line entries as a
+   block header; now floored at header+entries.
+7. Validator: llvm-pdbutil cuts inlinee names at 32 chars + "..."; four Rust
+   std PDBs failed the inline-site check on that alone. Now shortened on both
+   sides; 24/24 self-built files agree on every check.
+
+### Observations, not bugs
+
+- lld (lld-link and rust-lld) always writes DBI BuildNumber 14.11; MSVC
+  writes its own (9.00 = VS2008 on Win7 files, 11.00, 14.14, 14.30).
+- Microsoft's Win7-era and XP-era files carry OMAP (slot 4) *and* slot 10:
+  kernel32 61182 entries, ntdll 67714, user32 38222, XP kernel32 42544, XP
+  ntdll 37474. First genuinely BBT-processed files this project has had.
+  Ground-truth check needs the matching PE images — requested from the
+  corpus track (symbol server serves images by TimeDateStamp+SizeOfImage).
