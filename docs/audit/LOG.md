@@ -94,3 +94,13 @@ raising vs. tolerating DBI size damage.
 Not found in any file: `_ST` (pre-VS2005 length-prefixed) records — the XP
 files already carry S_PUB32. python 2.7 (VS2008) has 0 inline sites. Leaving
 `_ST` support out; there is no file to test it against.
+
+Observation (no action): `public_symbols()` order on ntkrnlmp is "unsorted" by
+one descent — `__pte_top` at 34:0xFFFFFFFF sorts before `__guard_eh_cont_count`
+at 34:0. The publics address map is sorted with the offset as a *signed* int32
+(MS's own comparator); purepdb keeps the map's order, which is correct. Both
+are absolute symbols (segment = sections+1), RVA None.
+
+node.pdb (354 MB, clang-cl, 3340 modules): diagnose 2m28s wall on the fixes
+branch under contention; 96917 procs, 139920 publics, 1584395 inline sites,
+0 malformed, 0 truncations, no warnings.
