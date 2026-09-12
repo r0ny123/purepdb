@@ -185,3 +185,10 @@ privacy setting, so every branch was replayed (cherry-pick -n + commit -C
 `audit/fixes-2026-09`, `audit/research-log`, `pr53-clean`, `pr59-clean`,
 `python-3.12-floor-clean`. Updating the two PR heads needs a refspec push
 this session could not make; see prs.md.
+
+- Fuzz seed 3 (fixtures, 4623 inputs in 1500 s): clean. Total fuzz this
+  audit: 4455 + 4620 + 4623 fixture-seeded, 6000 corpus-seeded, plus the
+  2000-input pass before every commit — no escaped exception anywhere.
+- S_COMPILE2 (VS2008 and link.exe import-library modules) now decoded;
+  python27.pdb compile_info 500 → 511, sqlite fixtures 155 → 159 and
+  145 → 149 (golden counts moved deliberately).
