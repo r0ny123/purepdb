@@ -192,3 +192,13 @@ this session could not make; see prs.md.
 - S_COMPILE2 (VS2008 and link.exe import-library modules) now decoded;
   python27.pdb compile_info 500 → 511, sqlite fixtures 155 → 159 and
   145 → 149 (golden counts moved deliberately).
+
+### xul.pdb (1.9 GB, Firefox) on the fixes branch, via mmap
+
+open 1.8 s / 267 MB; publics 25231 in 3.4 s; functions() 265345 in 230 s
+(3.2 GB RSS); diagnose() 954 s and **11.4 GB RSS**: 11 073 218 inline sites,
+342 642 procs, 250 unnamed sites (the VS2015-style decorated ids again, in a
+current clang-cl build). The memory was diagnose() materialising eleven
+million InlineFunction objects to count two integers; `_inline_listing`
+gained a `keep=False` mode (commit 2e7fb98) and the re-measurement is in
+progress. Time is the perf track's problem (single-pass survey).
