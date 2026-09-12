@@ -139,3 +139,29 @@ branch under contention; 96917 procs, 139920 publics, 1584395 inline sites,
   slot 5 gone its publics would not count as code publics.
 GUID/age agree with llvm-pdbutil on 68/68 files.
 Fuzzer gained --seed-dir; a run over msdl+xp+clang+rust seeds is in progress.
+
+### VS2015 inline sites with compiler-internal ids
+
+python 3.5 (MSVC 14.0) PDBs carry `S_INLINESITE` records whose inlinee is
+`0x80000000 | n` with tiny `n` — cvinfo.h's `DecoratedItemId` ("combined
+encoding of TI or FuncId, in compiler implementation"), which the VS2015
+linker never remapped into the IPI. `_hashlib.pdb` (x86): 5802 of 6554 sites;
+`_decimal.pdb`: 201/1978. llvm-pdbutil prints them nameless too, and the
+DEBUG_S_INLINEELINES entries carry the same ids, so nothing in the file names
+them. Not fixable; now counted (`Diagnostics.unnamed_inline_sites`) and
+warned about, and a missing IPI stream is warned about as well (it was not).
+
+### Fuzzing
+
+- fixtures, seeds 1 and 2, 4455 + 4620 inputs (1500 s each under load): clean.
+- `--seed-dir` msdl+xp+clang+rust (stripped, OMAP, 1024-byte-block shapes),
+  seed 7, 6000 inputs: clean.
+- corrupt corpus, 182 derived files: 0 escapes, every refusal a PdbError.
+
+### PRs improved on their branches (not pushed yet)
+
+- #53 `fix-correctness-audit` +1 commit: overrun clamps and is diagnosed
+  (`Diagnostics.dbi_overrun`), negative sizes still raise; C13 zero padding is
+  padding; CLI test; damaged-End test that actually pins the coordinate fix.
+- #59 `release/modernize-release-workflow` +1 commit: floor back to 3.11; the
+  bump lives on `python-3.12-floor` (1 commit from main, tested on 3.12).
