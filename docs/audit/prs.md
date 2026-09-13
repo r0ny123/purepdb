@@ -42,11 +42,14 @@ Evidence: 251 real PDBs agree with llvm-pdbutil on every comparable check
 self-built clang/lld/rust); OMAP verified against six symbol-server images;
 trampoline targets verified against `jmp rel32` in sqlite3.dll.
 
-## `perf/hot-paths` — measured speedups, identical output
+## `audit/perf-hot-paths` — measured speedups, identical output
 
-See `docs/audit/perf.md` on that branch for before/after per operation and
-file. Output snapshots are byte-identical to the unmodified parser on every
-fixture and corpus file (inline sites excepted where main is known-wrong).
+Eleven commits on top of `audit/fixes-2026-09` (merge that first, or take
+both together). See `perf.md` for before/after per operation and file:
+3–4.6x on every listing across the corpus, `diagnose()` 3.6–8x, xul.pdb's
+diagnose from 954 s to 152 s. Output snapshots are byte-identical to the
+fixes branch on every fixture and corpus file. Adds `tools/bench.py` and
+`tools/snapshot.py`.
 
 ## `pr53-clean` = `fix-correctness-audit` (PR #53) + one commit
 

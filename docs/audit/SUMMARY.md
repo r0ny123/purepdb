@@ -60,11 +60,30 @@ here, 168 corrupted derivatives.
 - Fuzz: 13.7k fixture-seeded + 6k corpus-seeded (`--seed-dir`, new) inputs,
   168 corrupt files: no escaped exception.
 
-## Performance
+## Performance (`audit/perf-hot-paths`, 11 commits on top of the fixes)
 
-See `perf.md` on `perf/hot-paths` (single-pass record walks, struct
-decoding, coalesced block reads, hoisted line-table lookups). Final numbers
-and the rebase onto the fixes branch: pending at the time of writing.
+Output snapshots byte-identical to the fixes branch on every fixture and
+corpus file. Best-of-N wall seconds, `tools/bench.py` (details in `perf.md`):
+
+| file | op | before | after | speedup |
+|---|---|---:|---:|---:|
+| sqlite x64 (3 MB) | all listings | 1.19 | 0.30 | 4.0x |
+| python314.pdb (21 MB, MSVC PGO) | diagnose | 6.69 | 0.88 | 7.6x |
+| | functions | 1.77 | 0.27 | 6.6x |
+| | all listings | 12.5 | 2.7 | 4.6x |
+| ntkrnlmp.pdb (8.5 MB, stripped) | diagnose | 1.36 | 0.22 | 6.3x |
+| node.pdb (355 MB) | functions | 21.6 | 3.5 | 6.2x |
+| | diagnose | 107 | 30 | 3.6x |
+| | all listings | 193 | 61 | 3.2x |
+| xul.pdb (1.93 GB) | diagnose | 954 (11.4 GB) | 152 (7.0 GB) | 6.3x |
+
+How: one `unpack_from` per record header and kind-filtered walks; a struct
+per fixed record portion; one walk per module stream for `functions()` and
+`diagnose()`; contiguous block runs read as single slices; positional IPI
+counting; slotted `Line`/`InlineFunction`/`RawRecord`; per-file and
+per-segment lookups hoisted out of the line loop. Not done (measured, see
+`perf.md`): mmap in `PDB.open`, and streaming the largest modules to cut
+xul's 7 GB peak further.
 
 ## What remains
 
@@ -73,8 +92,9 @@ and the rebase onto the fixes branch: pending at the time of writing.
 - No `/DEBUG:FASTLINK`, `_ST`-era (VS2003) or managed PDB in the corpus;
   nothing here can produce one.
 - XP OMAP pairs unverified (no matching images obtainable).
-- xul.pdb: 866 s diagnose is the perf track's open item; memory now 7 GB
-  peak, mostly transient per-module garbage.
+- xul.pdb: diagnose is down to 152 s; the 7 GB peak (1.9 GB of it the file
+  itself) is the next target — mmap in `PDB.open`, streaming the largest
+  module streams.
 - Two PR heads (#53, #59) need a refspec push this session could not make:
   `git push origin pr53-clean:fix-correctness-audit` and
   `git push origin pr59-clean:release/modernize-release-workflow`.
